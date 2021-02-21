@@ -50,14 +50,8 @@ class Router:
       network, relation = relationship.split("-")
       self.sockets[network] = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
       self.sockets[network].setblocking(0)
-      #nlast = int(network[len(network) - 1:len(network)]) + 1
-
-      #network = network.rstrip('2') + '0'
-      #networks = networks[len(network) - 1:len(network)] + str(nlast)
       self.sockets[network].connect(network)
-      #print('Sockets: ' + str(self.sockets) + ', \nRelationships: ' + str(self.relations))
       self.relations[network] = relation
-      print('Sockets: ' + str(self.sockets) + ', \nRelationships: ' + str(self.relations))
 
 
   def lookup_routes(self, daddr):
@@ -116,21 +110,39 @@ class Router:
       routes = self.filter_relationships(srcif, routes)
     return self.sockets[peer] if peer else None
 
+  # Forwards the given packet to the surrounding sockets
   def forward(self, srcif, packet):
     """ Forward a data packet """
-    # TODO
+    packet['msg']['ASPath'].append(self.asn)
+
+    # TODO Forward packets to people when the src is not a customer
+    if self.relations[srcif] == 'cust':
+      for sock in self.sockets:
+        if sock != srcif:
+          packet['src'] = sock.rstrip('2') + '1'
+          packet['dst'] = sock
+
+          conn = self.sockets[sock]      
+          msgout = json.dumps(packet)
+          conn.sendall(msgout.encode())
+    else:
+      print("Src not customer")
     return False
 
   def coalesce(self):
     """ coalesce any routes that are right next to each other """
     # TODO (this is the most difficult task, save until last)
     return False
-
+  
+  # Stores update message, forwards updates to neighbors if need be, updates forwarding table
   def update(self, srcif, packet):
     """ handle update packets """
-	
-    # TODO
-    return False
+    # TODO Verify that the storing of updates won't have overlapping entries
+    # TODO Verify that the forwarding address will work in the case of overlapping entries
+    self.updates[srcif] = packet
+    self.routes[packet['msg']['network']] = srcif, packet['msg']
+    self.forward(srcif, packet)
+    return True
 
   def revoke(self, packet):
     """ handle revoke packets """
@@ -142,14 +154,20 @@ class Router:
     # TODO
     
     return True
-
+  
+  # Receives the message from another router and send it to the correct handler method
   def handle_packet(self, srcif, packet):
     """ dispatches a packet """
-    # TODO
-    return False
+    if packet['type'] == 'update':
+      return self.update(srcif, packet)
 
+    # TODO Route data, revoke, dump, and other messages to the correct handler
+    return False
+  
+  # Send a no route message through the connection
   def send_error(self, conn, msg):
     """ Send a no_route error message """
+    print("No route")
     # TODO
     return
 
