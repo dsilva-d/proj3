@@ -110,6 +110,13 @@ class Router:
       routes = self.filter_relationships(srcif, routes)
     return self.sockets[peer] if peer else None
 
+#Added
+  def senddata(self, packet):
+      """find the route and send data message"""
+      conn = self.getroute(packet["src"],packet["dst"])
+      
+
+
   # Forwards the given packet to the surrounding sockets
   def forward(self, srcif, packet):
     """ Forward a data packet """
@@ -121,7 +128,7 @@ class Router:
         if sock != srcif:
           packet['src'] = sock.rstrip('2') + '1'
           packet['dst'] = sock
-
+          
           conn = self.sockets[sock]      
           msgout = json.dumps(packet)
           conn.sendall(msgout.encode())
@@ -140,7 +147,9 @@ class Router:
     # TODO Verify that the storing of updates won't have overlapping entries
     # TODO Verify that the forwarding address will work in the case of overlapping entries
     self.updates[srcif] = packet
-    self.routes[packet['msg']['network']] = srcif, packet['msg']
+
+    rdic = {"network" : packet['msg']['network'], "netmask" : packet['msg']['netmask'], "peer" : srcif}
+    self.routes[packet['msg']['network']] = rdic
     self.forward(srcif, packet)
     return True
 
@@ -153,6 +162,17 @@ class Router:
     """ handles dump table requests """
     # TODO
     
+    tmp = packet["src"]
+    packet["src"] = packet["dst"]
+    packet["dst"] = tmp
+    packet["type"] = "table"
+    packet["msg"] = list(self.routes.values()) 
+    
+    conn = self.sockets[tmp]
+    msgout = json.dumps(packet)
+    conn.sendall(msgout.encode())
+    print('DUMP: ' + str(packet))
+
     return True
   
   # Receives the message from another router and send it to the correct handler method
@@ -160,7 +180,11 @@ class Router:
     """ dispatches a packet """
     if packet['type'] == 'update':
       return self.update(srcif, packet)
-
+    if packet['type'] == 'dump':
+      return self.dump(packet)
+    if packet['type'] == 'data':
+      return self.getroute()
+      print("Data Packet: " + str(packet) + "\n")
     # TODO Route data, revoke, dump, and other messages to the correct handler
     return False
   
