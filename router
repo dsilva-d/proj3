@@ -53,15 +53,37 @@ class Router:
       self.sockets[network].connect(network)
       self.relations[network] = relation
 
-
+  # Returns all possible routes to daddr
   def lookup_routes(self, daddr):
     """ Lookup all valid routes for an address """
-    # TODO
+    outroutes = []
     ladd = daddr.split(".")
     ladd.pop(len(ladd) - 1)
     ladd.append(0)
     daddr = str(ladd[0]) + '.' + str(ladd[1]) + '.' + str(ladd[2]) + '.' + str(ladd[3])
-    outroutes = [self.routes[daddr]]
+   
+    # For every peer, if there is a route to the daddr, add it to outroutes 
+    for srcif in self.sockets:
+       outroutes.append(self.routes[(daddr, srcif)]) ## key is ip name, and peer/src
+    return outroutes
+  
+  # Get the network(s) that all have the longest netmask
+  def get_longest_prefix(self, routes):
+    outroutes = []
+    longest = 0
+
+    # Gets longest netmask
+    for route in routes:
+      netmask = route['netmask'].split(".")
+      num = int(netmask[0]) + int(netmask[1]) + int(netmask[2]) + int(netmask[3])
+      if num > longest:
+        longest = num
+    # Adds routes with the longest netmask to outroute
+    for route in routes:
+      netmask = route['netmask'].split(".")
+      num = int(netmask[0]) + int(netmask[1]) + int(netmask[2]) + int(netmask[3])
+      if num >= longest:
+        outroutes.append(route) 
     return outroutes
 
   def get_shortest_as_path(self, routes):
@@ -69,18 +91,46 @@ class Router:
     # TODO
     outroutes = []
     return routes
-
+  
+  # Returns all routes with the highest preference
   def get_highest_preference(self, routes):
-    """ select the route with the shortest AS Path """
-    # TODO
+    """ select the route with the highest local preference """
     outroutes = []
-    return routes
+    high = 0
 
+    # Gets highest local preference
+    for route in routes:
+      details = self.updates[route['peer']]
+      localpref = details['msg']['localpref']
+      if localpref > high:
+        high = localpref
+    # Adds all routes with highest local pref to outroutes
+    for route in routes:
+      details = self.updates[route['peer']]
+      localpref = details['msg']['localpref']
+      if localpref >= high:
+        outroutes.append(route)
+    print("Routing table", self.routes)
+    return outroutes
+
+  # Returns all routes where the self origin is preferential
   def get_self_origin(self, routes):
     """ select self originating routes """
-    # TODO
     outroutes = []
-    return routes
+    fromself = False
+
+    # Determines if any route has self origin true
+    for route in routes:
+      details = self.updates[route['peer']]
+      selforigin = details['msg']['selfOrigin']
+      if selforigin:
+        fromself = True
+        outroutes.append(route)
+
+    if fromself:
+      return outroutes
+    else:
+      return routes
 
   def get_origin_routes(self, routes):
     """ select origin routes: EGP > IGP > UNK """
@@ -93,6 +143,7 @@ class Router:
     outroutes = []
     return routes
 
+  # Finds the best route for the given destination address
   def get_route(self, srcif, daddr):
     """ Select the best route for a given address """
     # TODO
@@ -100,6 +151,8 @@ class Router:
     routes = self.lookup_routes(daddr)
     # Rules go here
     if routes:
+      # 0. Checking netmask length
+      routes = self.get_longest_prefix(routes)
       # 1. Highest Preference
       routes = self.get_highest_preference(routes)
       # 2. Self Origin
@@ -115,7 +168,8 @@ class Router:
       peer = routes[0]["peer"]
     return self.sockets[peer] if peer else None
 
-#Added
+  # Added
+  # Sends the given data packet to the appropriate destination or returns False if it cannot.
   def send_data(self, srcif, packet):
       """find the route and send data message"""
       conn = self.get_route(srcif,packet['dst'])
@@ -126,23 +180,29 @@ class Router:
       else:
          return False
 
+  # Sending the given packet to the daddr with our router as the source
+  def sendOne(self, daddr, packet):
+    packet['src'] = daddr.rstrip('2') + '1'
+    packet['dst'] = daddr
+          
+    conn = self.sockets[daddr]      
+    msgout = json.dumps(packet)
+    conn.sendall(msgout.encode())
+
+
   # Forwards the given packet to the surrounding sockets
   def forward(self, srcif, packet):
     """ Forward a data packet """
     packet['msg']['ASPath'].append(self.asn)
 
-    # TODO Forward packets to people when the src is not a customer
     if self.relations[srcif] == 'cust':
       for sock in self.sockets:
         if sock != srcif:
-          packet['src'] = sock.rstrip('2') + '1'
-          packet['dst'] = sock
-          
-          conn = self.sockets[sock]      
-          msgout = json.dumps(packet)
-          conn.sendall(msgout.encode())
+          self.sendOne(sock, packet)
     else:
-      print("Src not customer")
+      for sock in self.sockets:
+        if self.relations[sock] == 'cust':
+          self.sendOne(sock, packet)
     return False
 
   def coalesce(self):
@@ -158,7 +218,7 @@ class Router:
     self.updates[srcif] = packet
 
     rdic = {"network" : packet['msg']['network'], "netmask" : packet['msg']['netmask'], "peer" : srcif}
-    self.routes[packet['msg']['network']] = rdic
+    self.routes[(packet['msg']['network'], srcif)] = rdic ## key is (network name, peer/src)
     self.forward(srcif, packet)
     return True
 
@@ -167,9 +227,9 @@ class Router:
     # TODO
     return True
 
+  # Sends a copy of our routing table to the src of the packet
   def dump(self, packet):
     """ handles dump table requests """
-    # TODO
     
     tmp = packet["src"]
     packet["src"] = packet["dst"]
@@ -192,7 +252,7 @@ class Router:
       return self.dump(packet)
     if packet['type'] == 'data':
       return self.send_data(srcif, packet)
-    # TODO Route data, revoke, dump, and other messages to the correct handler
+    # TODO Route revoke, and other messages to the correct handler
     return False
   
   # Send a no route message through the connection
