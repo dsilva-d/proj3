@@ -46,6 +46,7 @@ class Router:
     self.updates = {}
     self.relations = {}
     self.sockets = {}
+    self.revoke = {}
     for relationship in networks:
       network, relation = relationship.split("-")
       self.sockets[network] = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
@@ -61,10 +62,12 @@ class Router:
     ladd.pop(len(ladd) - 1)
     ladd.append(0)
     daddr = str(ladd[0]) + '.' + str(ladd[1]) + '.' + str(ladd[2]) + '.' + str(ladd[3])
-   
     # For every peer, if there is a route to the daddr, add it to outroutes 
     for srcif in self.sockets:
-       outroutes.append(self.routes[(daddr, srcif)]) ## key is ip name, and peer/src
+       try:
+         outroutes.append(self.routes[(daddr, srcif)]) ## key is ip name, and peer/src
+       except:
+         pass
     return outroutes
   
   # Get the network(s) that all have the longest netmask
@@ -90,7 +93,19 @@ class Router:
     """ select the route with the shortest AS Path """
     # TODO
     outroutes = []
-    return routes
+    sasp = float('inf')
+    for route in routes:
+      details = self.updates[(route['peer'], route['network'])]
+      asp = len(details['msg']['ASPath'])
+      if sasp > asp:
+        sasp = asp
+    for route in routes:
+      details = self.updates[(route['peer'], route['network'])]
+      asp = len(details['msg']['ASPath'])
+      if asp <= sasp:
+        outroutes.append(route)
+
+    return outroutes
   
   # Returns all routes with the highest preference
   def get_highest_preference(self, routes):
@@ -100,17 +115,16 @@ class Router:
 
     # Gets highest local preference
     for route in routes:
-      details = self.updates[route['peer']]
+      details = self.updates[(route['peer'], route['network'])]
       localpref = details['msg']['localpref']
       if localpref > high:
         high = localpref
     # Adds all routes with highest local pref to outroutes
     for route in routes:
-      details = self.updates[route['peer']]
+      details = self.updates[(route['peer'], route['network'])]
       localpref = details['msg']['localpref']
       if localpref >= high:
         outroutes.append(route)
-    print("Routing table", self.routes)
     return outroutes
 
   # Returns all routes where the self origin is preferential
@@ -121,7 +135,7 @@ class Router:
 
     # Determines if any route has self origin true
     for route in routes:
-      details = self.updates[route['peer']]
+      details = self.updates[(route['peer'], route['network'])]
       selforigin = details['msg']['selfOrigin']
       if selforigin:
         fromself = True
@@ -133,10 +147,38 @@ class Router:
       return routes
 
   def get_origin_routes(self, routes):
-    """ select origin routes: EGP > IGP > UNK """
-    # TODO
+    """ select origin routes: IGP > EGP > UNK """
     outroutes = []
-    return routes
+    borig = 'UNK'
+    for route in routes:
+      details = self.updates[(route['peer'], route['network'])]
+      corig = details['msg']['origin']
+      if(corig == 'IGP'):
+        borig = 'IGP'
+      if(corig == 'EGP' and borig != 'IGP'):
+        borig = 'EGP'
+    for route in routes:
+      details = self.updates[(route['peer'], route['network'])]
+      corig = details['msg']['origin']
+      if(corig == borig):
+        outroutes.append(route)
+    return outroutes
+
+  def get_lowest_ip(self, routes):
+     """ select peer with the lowest ip address """
+     outroutes = []
+     lip = float('inf')
+     for route in routes:
+       cip = route['peer'].split(".")
+       cnum = int(cip[0]) + int(cip[1]) + int(cip[2]) + int(cip[3])
+       if(cnum < lip):
+         lip = cnum
+     for route in routes:
+       cip = route['peer'].split(".")
+       cnum = int(cip[0]) + int(cip[1]) + int(cip[2]) + int(cip[3])
+       if(cnum <= lip):
+         outroutes.append(route)
+     return outroutes
 
   def filter_relationships(self, srcif, routes):
     """ Don't allow Peer->Peer, Peer->Prov, or Prov->Peer forwards """
@@ -149,6 +191,7 @@ class Router:
     # TODO
     peer = None
     routes = self.lookup_routes(daddr)
+    
     # Rules go here
     if routes:
       # 0. Checking netmask length
@@ -162,6 +205,7 @@ class Router:
       # 4. EGP > IGP > UNK
       routes = self.get_origin_routes(routes)
       # 5. Lowest IP Address
+      routes = self.get_lowest_ip(routes)
       # TODO
       # Final check: enforce peering relationships
       routes = self.filter_relationships(srcif, routes)
@@ -215,10 +259,10 @@ class Router:
     """ handle update packets """
     # TODO Verify that the storing of updates won't have overlapping entries
     # TODO Verify that the forwarding address will work in the case of overlapping entries
-    self.updates[srcif] = packet
+    self.updates[(srcif,packet['msg']['network'])] = packet
 
     rdic = {"network" : packet['msg']['network'], "netmask" : packet['msg']['netmask'], "peer" : srcif}
-    self.routes[(packet['msg']['network'], srcif)] = rdic ## key is (network name, peer/src)
+    self.routes[(str(packet['msg']['network']), str(srcif))] = rdic ## key is (network name, peer/src)
     self.forward(srcif, packet)
     return True
 
