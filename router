@@ -46,7 +46,7 @@ class Router:
     self.updates = {}
     self.relations = {}
     self.sockets = {}
-    self.revoke = {}
+    self.revokes = []
     for relationship in networks:
       network, relation = relationship.split("-")
       self.sockets[network] = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
@@ -237,7 +237,6 @@ class Router:
   # Forwards the given packet to the surrounding sockets
   def forward(self, srcif, packet):
     """ Forward a data packet """
-    packet['msg']['ASPath'].append(self.asn)
 
     if self.relations[srcif] == 'cust':
       for sock in self.sockets:
@@ -257,19 +256,24 @@ class Router:
   # Stores update message, forwards updates to neighbors if need be, updates forwarding table
   def update(self, srcif, packet):
     """ handle update packets """
-    # TODO Verify that the storing of updates won't have overlapping entries
-    # TODO Verify that the forwarding address will work in the case of overlapping entries
     self.updates[(srcif,packet['msg']['network'])] = packet
 
     rdic = {"network" : packet['msg']['network'], "netmask" : packet['msg']['netmask'], "peer" : srcif}
     self.routes[(str(packet['msg']['network']), str(srcif))] = rdic ## key is (network name, peer/src)
+    packet['msg']['ASPath'].append(self.asn)
     self.forward(srcif, packet)
     return True
 
   def revoke(self, packet):
     """ handle revoke packets """
-    # TODO
+    self.revokes.append(packet)
+    for route in packet['msg']:
+      tmp = self.routes[(route['network'], packet['src'])]
+      if tmp['netmask'] == route['netmask']:
+        self.routes.pop((route['network'],packet['src']))
+    self.forward(packet['src'], packet)
     return True
+
 
   # Sends a copy of our routing table to the src of the packet
   def dump(self, packet):
@@ -296,14 +300,20 @@ class Router:
       return self.dump(packet)
     if packet['type'] == 'data':
       return self.send_data(srcif, packet)
+    if packet['type'] == 'revoke':
+      return self.revoke(packet)
     # TODO Route revoke, and other messages to the correct handler
     return False
   
-  # Send a no route message through the connection
-  def send_error(self, conn, msg):
+  # Send a no route message through the connection (ADDED SRCIF)
+  def send_error(self, conn, srcif, msg):
     """ Send a no_route error message """
-    print("No route")
-    # TODO
+    msg["type"] = "no route"
+    msg["dst"] = msg["src"]
+    msg["src"] = str(srcif).rstrip("2") + "1"
+    msg["msg"] = {}
+    outmsg = json.dumps(msg)
+    conn.send(str(outmsg).encode())
     return
 
   def run(self):
@@ -322,7 +332,7 @@ class Router:
               srcif = sock
           msg = json.loads(k)
           if not self.handle_packet(srcif, msg):
-            self.send_error(conn, msg)
+            self.send_error(conn, srcif, msg)
         else:
           return
 
