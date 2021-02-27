@@ -254,14 +254,38 @@ class Router:
           self.sendOne(sock, packet)
     return False
 
+  def ipagg(self, rou1, rou2):
+     #aggregate two routes
+     n1 = rou1['network'].split('.')
+     s1 = rou1['netmask'].split('.')
+     n2 = rou2['network'].split('.')
+     s2 = rou2['netmask'].split('.')
+     for i in n1:
+       n1[i] = bin(int(s1[i])) and bin(int(n1[i]))
+     for i in n2:
+       n2[i] = bin(int(s2[i])) and bin(int(n2[i]))
+     return n1 == n2
+
+  def routagg(self, rou1, rou2):
+    if(rou1['peer'] == rou2['peer']):
+      r1up = self.updates[(rou1['network'], rou1['peer'])]
+      r2up = self.updates[(rou2['network'], rou2 ['peer'])]
+      if(r1up['localpref'] == r2up['localpref'] 
+      and r1up['selfOrigin'] == r2up['selfOrigin'] 
+      and r1up['ASPath'] == r2up['ASPath'] 
+      and r1up['origin'] == r2up['origin']):
+        return self.ipagg(rou1, rou2)
+    else:
+      return False
+
   def coalesce(self):
     """ coalesce any routes that are right next to each other """
     # TODO (this is the most difficult task, save until last)
     for route in routes:
-      if !self.aggregate[(route['network'], route['peer'])]:
+     #if !self.aggregate[(route['network'], route['peer'])]:
         self.aggregate[(route['network'], route['peer'])].append(route)
-      else:
-        self.
+     #else:
+        
 
     self.routes = self.aggregate
     
