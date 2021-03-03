@@ -184,8 +184,6 @@ class Router:
     """ Don't allow Peer->Peer, Peer->Prov, or Prov->Peer forwards """
     outroutes = []
     srcrel = self.relations[srcif] 
-    print("ROUTES: " + str(routes))
-    print("RELATIONS: " + str(self.relations))
     for route in routes:
       if(srcrel == "cust" or self.relations[route['peer']] == "cust"):
         outroutes.append(route)
@@ -257,44 +255,74 @@ class Router:
   def ipagg(self, rou1, rou2):
      #aggregate two routes
      n1 = rou1['network'].split('.')
-     s1 = rou1['netmask'].split('.')
+     nm = rou1['netmask'].split('.')
      n2 = rou2['network'].split('.')
-     s2 = rou2['netmask'].split('.')
-     for i in n1:
-       n1[i] = bin(int(s1[i])) and bin(int(n1[i]))
-     for i in n2:
-       n2[i] = bin(int(s2[i])) and bin(int(n2[i]))
-     return n1 == n2
+     bn1 = ''
+     bn2 = ''
+     bnm = ''
+     print('n1: ' + str(n1) + ' n2: ' + str(n2) + ' nm: ' + str(nm))
+     for i in range(0, len(n1)):
+    
+       bnt1 = str(bin(int(nm[i]) & int(n1[i])))[2:]
+       bnt2 = str(bin(int(nm[i]) & int(n2[i])))[2:]
+       bnmt = str(bin(int(nm[i])))[2:]
+       
+       
+       bn1 += (8 - len(bnt1)) * '0' + bnt1
+       bn2 += (8 - len(bnt2)) * '0' + bnt2
+       bnm += (8 - len(bnmt)) * '0' + bnmt
+
+
+     
+     lbnm = bnm.find('0')
+     lbl = 32 - lbnm
+     print('Bn1: ' + str(bn1[lbnm + 1]) + ' Bn2: ' + str(bn2[lbnm + 1]) + ' Netmask: ' + str(bnm))
+     if(bn1[:lbnm] == bn2[:lbnm] and bn1[lbnm + 1] != bn2[lbnm + 1]):
+       bnet = bn1[:lbnm - 1] + '0'*lbl # could be off by one
+       bnet = str(int(bnet[:8], 2)) + '.' + str(int(bnet[8:16], 2)) + '.' + str(int(bnet[16:24], 2)) + '.' + str(int(bnet[24:32], 2))
+       print('AGG: ' + str(bnet))
+       return bnet
+     else:
+       return False
 
   def routagg(self, rou1, rou2):
     if(rou1['peer'] == rou2['peer']):
-      r1up = self.updates[(rou1['network'], rou1['peer'])]
-      r2up = self.updates[(rou2['network'], rou2 ['peer'])]
-      if(r1up['localpref'] == r2up['localpref'] 
-      and r1up['selfOrigin'] == r2up['selfOrigin'] 
-      and r1up['ASPath'] == r2up['ASPath'] 
-      and r1up['origin'] == r2up['origin']):
+      r1up = self.updates[(rou1['peer'], rou1['network'])]
+      r2up = self.updates[(rou2['peer'], rou2 ['network'])]
+      if(r1up['msg']['localpref'] == r2up['msg']['localpref'] 
+      and r1up['msg']['selfOrigin'] == r2up['msg']['selfOrigin'] 
+      and r1up['msg']['ASPath'] == r2up['msg']['ASPath'] 
+      and r1up['msg']['origin'] == r2up['msg']['origin']
+      and r1up['msg']['netmask'] == r2up['msg']['netmask']):
         return self.ipagg(rou1, rou2)
     else:
       return False
 
   def coalesce(self):
     """ coalesce any routes that are right next to each other """
-    # TODO (this is the most difficult task, save until last)
-    for route in routes:
-     #if !self.aggregate[(route['network'], route['peer'])]:
-        self.aggregate[(route['network'], route['peer'])].append(route)
-     #else:
-        
+    troutes = list(iter(self.routes))
+    for route1 in self.routes:
+       troutes.pop(0)
+       for route2 in troutes:
+          r1 = self.routes[route1]
+          r2 = self.routes[route2]
+          rag = self.routagg(r1, r2)
+          if rag:
+             netm = netm.split('.')
+             netmi = 3
+             if('0' in netm):
+               netmi = netm.index('0')
+             netm[netmi - 1] = str(((int(netm[netmi - 1]) + 1) / 2) + 1)
+             
 
-    self.routes = self.aggregate
+             netm = netm[0] + '.' + netm[1] + '.' + netm[2] + '.' + netm[3]
+             npeer = r1["peer"]
+             del self.routes[route1]
+             del self.routes[route2]
+             adic = {"network" : rag, "netmask" : netm, "peer" : npeer}
+             self.routes[rag] = adic
+             self.aggregate[rag] = (r1["network"], r2["network"])
     
-    
-    # AGGREGATE IF:
-    # Adjacent numerically
-    # Forward to the same next-hop router
-    # Have same attributes
-    return False
   
   # Stores update message, forwards updates to neighbors if need be, updates forwarding table
   def update(self, srcif, packet):
@@ -305,7 +333,7 @@ class Router:
     self.routes[(str(packet['msg']['network']), str(srcif))] = rdic ## key is (network name, peer/src)
     packet['msg']['ASPath'].append(self.asn)
     self.forward(srcif, packet)
-    # coalesce()
+    self.coalesce()
     return True
 
   def revoke(self, packet):
@@ -346,7 +374,6 @@ class Router:
       return self.send_data(srcif, packet)
     if packet['type'] == 'revoke':
       return self.revoke(packet)
-    # TODO Route revoke, and other messages to the correct handler
     return False
   
   # Send a no route message through the connection (ADDED SRCIF)
