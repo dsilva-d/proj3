@@ -356,6 +356,7 @@ class Router:
   
   # Finds the route given in the aggregate table, deaggregate, and update forwarding table
   def findAggRoute(self, route, srcif):
+    # TODO: Deal with cascading revokes
     aggs = list(iter(self.aggregates))
     for newip in aggs:
       info = self.aggregates[newip]
