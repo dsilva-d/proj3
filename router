@@ -299,14 +299,15 @@ class Router:
 
   # Determines if two routes are able to be aggregated together and does so
   def routagg(self, rou1, rou2):
+    
     if(rou1['peer'] == rou2['peer']):
       r1up = self.updates[(rou1['peer'], rou1['network'])]
-      r2up = self.updates[(rou2['peer'], rou2 ['network'])]
+      r2up = self.updates[(rou2['peer'], rou2['network'])]
       if(r1up['msg']['localpref'] == r2up['msg']['localpref'] 
       and r1up['msg']['selfOrigin'] == r2up['msg']['selfOrigin'] 
       and r1up['msg']['ASPath'] == r2up['msg']['ASPath'] 
       and r1up['msg']['origin'] == r2up['msg']['origin']
-      and r1up['msg']['netmask'] == r2up['msg']['netmask']):
+      and rou1['netmask'] == rou2['netmask']):
         return self.ipagg(rou1, rou2)
     else:
       return False
@@ -319,26 +320,28 @@ class Router:
     for route1 in routes:
        troutes.pop(0)
        for route2 in troutes:
-          r1 = self.routes[route1]
-          r2 = self.routes[route2]
-          rag = self.routagg(r1, r2)
-          if rag:
-             # Alters netmask
-             netm = r1["netmask"].split('.')
-             netmi = 3
-             if('0' in netm):
-               netmi = netm.index('0') - 1
-             binnetm =  str(bin(int(netm[netmi]) << 1))[3:]
-             netm[netmi] = str(int(binnetm, 2)) 
+          if route1 in self.routes and route2 in self.routes:
+            r1 = self.routes[route1]
+            r2 = self.routes[route2]
+            rag = self.routagg(r1, r2)
+            if rag:
+               # Alters netmask
+               netm = r1["netmask"].split('.')
+               netmi = 3
+               if('0' in netm):
+                 netmi = netm.index('0') - 1
+               binnetm =  str(bin(int(netm[netmi]) << 1))[3:]
+               netm[netmi] = str(int(binnetm, 2)) 
 
-             # Deletes old routes, adds new route, stores everything
-             netm = netm[0] + '.' + netm[1] + '.' + netm[2] + '.' + netm[3]
-             npeer = r1["peer"]
-             del self.routes[route1]
-             del self.routes[route2]
-             adic = {"network" : rag, "netmask" : netm, "peer" : npeer}
-             self.routes[rag, npeer] = adic ## TODO: change key to ip and src
-             self.aggregates[rag] = {'ip1' : r1, 'ip2' : r2}
+               # Deletes old routes, adds new route, stores everything
+               netm = netm[0] + '.' + netm[1] + '.' + netm[2] + '.' + netm[3]
+               npeer = r1["peer"]
+               del self.routes[route1]
+               del self.routes[route2]
+               adic = {"network" : rag, "netmask" : netm, "peer" : npeer}
+               self.routes[rag, npeer] = adic ## TODO: change key to ip and src
+               troutes.append(rag)
+               self.aggregates[rag, netm] = {'ip1' : r1, 'ip2' : r2}
     
   
   # Stores update message, forwards updates to neighbors if need be, updates forwarding table
@@ -351,35 +354,53 @@ class Router:
     packet['msg']['ASPath'].append(self.asn)
     self.forward(srcif, packet)
     self.coalesce()
-    print("ROUTES: ", self.routes, "\n")
     return True
   
   # Finds the route given in the aggregate table, deaggregate, and update forwarding table
-  def findAggRoute(self, route, srcif):
+  def findAggRoute(self, rnet, rmas, srcif):
     # TODO: Deal with cascading revokes
     aggs = list(iter(self.aggregates))
-    for newip in aggs:
-      info = self.aggregates[newip]
-      if info['ip1']['network'] == route['network']:
-        self.routes[info['ip2']['network'], srcif] = info['ip2']
-        del self.routes[newip, srcif]
-        del self.aggregates[newip]
-      elif info['ip2']['network'] == route['network']:
+    print('findAggRoute(', str(rnet), ', ', str(srcif), ', ', str(rmas), ')')
+    print('\n ROUTES: ', self.routes)
+    print('\n AGGREGATION: ', self.aggregates)
+    print('\n AGGS: ', aggs)
+    
+    for newip,mask in aggs:
+      info = self.aggregates[newip,mask]
+      print('INFO: ', str(info))
+      if info['ip1']['network'] == rnet and info['ip1']['netmask'] == rmas:
+        self.routes[info['ip2']['network'], srcif] = info['ip2'] 
+        if (newip,srcif) in self.routes:
+          del self.routes[newip, srcif]
+          del self.aggregates[newip,mask]
+          #aggs.remove((newip,mask))
+        self.findAggRoute(newip, mask, srcif)
+        break
+      elif info['ip2']['network'] == rnet and info['ip2']['netmask'] == rmas:
         self.routes[info['ip1']['network'], srcif] = info['ip1']
-        del self.routes[newip, srcif]
-        del self.aggregates[newip]
-  
+        if (newip,srcif) in self.routes:
+          del self.routes[newip, srcif]
+          del self.aggregates[newip,mask]
+          #aggs.remove((newip,mask))
+        self.findAggRoute(newip, mask, srcif)     
+        break
+       
+    print('AFTER findAggRoute(', str(rnet), ', ', str(srcif), ', ', str(rmas), ')')
+    print('\n AFTER ROUTES: ', self.routes)
+    print('\n AFTER AGGREGATION: ', self.aggregates)
+
   # Runs through all revoke messages and removes the routes from the forwarding table
   def revoke(self, packet):
     """ handle revoke packets """
     self.revokes.append(packet)
+    print('REVOKES: ', self.revokes)
     for route in packet['msg']:
       if (route['network'], packet['src']) in self.routes:
         tmp = self.routes[(route['network'], packet['src'])]
         if tmp['netmask'] == route['netmask']:
           self.routes.pop((route['network'],packet['src']))
       else:
-        self.findAggRoute(route, packet['src'])
+        self.findAggRoute(route['network'], route['netmask'], packet['src'])
     self.forward(packet['src'], packet)
     return True
 
