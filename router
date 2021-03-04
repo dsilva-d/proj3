@@ -60,15 +60,23 @@ class Router:
     """ Lookup all valid routes for an address """
     outroutes = []
     ladd = daddr.split(".")
-    ladd.pop(len(ladd) - 1)
-    ladd.append(0)
-    daddr = str(ladd[0]) + '.' + str(ladd[1]) + '.' + str(ladd[2]) + '.' + str(ladd[3])
-    # For every peer, if there is a route to the daddr, add it to outroutes 
-    for srcif in self.sockets:
-       try:
-         outroutes.append(self.routes[(daddr, srcif)]) ## key is ip name, and peer/src
-       except:
-         pass
+
+    # For every route in forwarding table, apply netmask to daddr
+    # Add to outroutes if they are equal
+    for route in self.routes:
+      r = self.routes[route]
+      nm = r['netmask'].split('.')
+      net = r['network'].split('.')
+      templadd = ['0', '0', '0', '0']
+
+      # Applies netmask to daddr
+      for i in range(0, 4):
+        templadd[i] = str(int(ladd[i]) & int(nm[i]))
+      
+      # If daddr + netmask is the network, add as a possibility
+      if templadd == net:
+        outroutes.append(r)  
+
     return outroutes
   
   # Get the network(s) that all have the longest netmask
@@ -90,15 +98,19 @@ class Router:
         outroutes.append(route) 
     return outroutes
 
+  # Outputs a list of routes who all have the shortest as path
   def get_shortest_as_path(self, routes):
     """ select the route with the shortest AS Path """
     outroutes = []
     sasp = float('inf')
+
+    # Finds shortest path length
     for route in routes:
       details = self.updates[(route['peer'], route['network'])]
       asp = len(details['msg']['ASPath'])
       if sasp > asp:
         sasp = asp
+    # Adds routes with shortest path to outroutes
     for route in routes:
       details = self.updates[(route['peer'], route['network'])]
       asp = len(details['msg']['ASPath'])
@@ -146,6 +158,7 @@ class Router:
     else:
       return routes
 
+  # Outputs all routes with the most preferential origin
   def get_origin_routes(self, routes):
     """ select origin routes: IGP > EGP > UNK """
     outroutes = []
@@ -164,6 +177,7 @@ class Router:
         outroutes.append(route)
     return outroutes
 
+  # Outputs the route with the lowest ip address at the peer level
   def get_lowest_ip(self, routes):
      """ select peer with the lowest ip address """
      outroutes = []
@@ -180,6 +194,7 @@ class Router:
          outroutes.append(route)
      return outroutes
 
+  # Filters out any routes with illegal relationships
   def filter_relationships(self, srcif, routes):
     """ Don't allow Peer->Peer, Peer->Prov, or Prov->Peer forwards """
     outroutes = []
@@ -209,7 +224,6 @@ class Router:
       routes = self.get_origin_routes(routes)
       # 5. Lowest IP Address
       routes = self.get_lowest_ip(routes)
-      # TODO
       # Final check: enforce peering relationships
       routes = self.filter_relationships(srcif, routes)
       if routes:
@@ -252,6 +266,7 @@ class Router:
           self.sendOne(sock, packet)
     return False
 
+  # Determines if two ip addresses are adjacent and returns their combined addr if so
   def ipagg(self, rou1, rou2):
      #aggregate two routes
      n1 = rou1['network'].split('.')
@@ -260,31 +275,29 @@ class Router:
      bn1 = ''
      bn2 = ''
      bnm = ''
-     print('n1: ' + str(n1) + ' n2: ' + str(n2) + ' nm: ' + str(nm))
+
+     # Applying netmask and converting to binary
      for i in range(0, len(n1)):
     
        bnt1 = str(bin(int(nm[i]) & int(n1[i])))[2:]
        bnt2 = str(bin(int(nm[i]) & int(n2[i])))[2:]
        bnmt = str(bin(int(nm[i])))[2:]
        
-       
        bn1 += (8 - len(bnt1)) * '0' + bnt1
        bn2 += (8 - len(bnt2)) * '0' + bnt2
        bnm += (8 - len(bnmt)) * '0' + bnmt
 
-
-     
+     # Determining if they are adjacent and returning aggregated IP if so     
      lbnm = bnm.find('0')
      lbl = 32 - lbnm
-     print('Bn1: ' + str(bn1[lbnm + 1]) + ' Bn2: ' + str(bn2[lbnm + 1]) + ' Netmask: ' + str(bnm))
-     if(bn1[:lbnm] == bn2[:lbnm] and bn1[lbnm + 1] != bn2[lbnm + 1]):
+     if(bn1[:lbnm-1] == bn2[:lbnm-1] and bn1[lbnm-1] != bn2[lbnm-1]):
        bnet = bn1[:lbnm - 1] + '0'*lbl # could be off by one
        bnet = str(int(bnet[:8], 2)) + '.' + str(int(bnet[8:16], 2)) + '.' + str(int(bnet[16:24], 2)) + '.' + str(int(bnet[24:32], 2))
-       print('AGG: ' + str(bnet))
        return bnet
      else:
        return False
 
+  # Determines if two routes are able to be aggregated together and does so
   def routagg(self, rou1, rou2):
     if(rou1['peer'] == rou2['peer']):
       r1up = self.updates[(rou1['peer'], rou1['network'])]
@@ -298,30 +311,34 @@ class Router:
     else:
       return False
 
+  # Runs through forwarding table and combines all routes that can be aggregated
   def coalesce(self):
     """ coalesce any routes that are right next to each other """
     troutes = list(iter(self.routes))
-    for route1 in self.routes:
+    routes = list(iter(self.routes))
+    for route1 in routes:
        troutes.pop(0)
        for route2 in troutes:
           r1 = self.routes[route1]
           r2 = self.routes[route2]
           rag = self.routagg(r1, r2)
           if rag:
-             netm = netm.split('.')
+             # Alters netmask
+             netm = r1["netmask"].split('.')
              netmi = 3
              if('0' in netm):
-               netmi = netm.index('0')
-             netm[netmi - 1] = str(((int(netm[netmi - 1]) + 1) / 2) + 1)
-             
+               netmi = netm.index('0') - 1
+             binnetm =  str(bin(int(netm[netmi]) << 1))[3:]
+             netm[netmi] = str(int(binnetm, 2)) 
 
+             # Deletes old routes, adds new route, stores everything
              netm = netm[0] + '.' + netm[1] + '.' + netm[2] + '.' + netm[3]
              npeer = r1["peer"]
              del self.routes[route1]
              del self.routes[route2]
              adic = {"network" : rag, "netmask" : netm, "peer" : npeer}
-             self.routes[rag] = adic
-             self.aggregate[rag] = (r1["network"], r2["network"])
+             self.routes[rag, npeer] = adic ## TODO: change key to ip and src
+             self.aggregates[rag] = {'ip1' : r1, 'ip2' : r2}
     
   
   # Stores update message, forwards updates to neighbors if need be, updates forwarding table
@@ -334,15 +351,34 @@ class Router:
     packet['msg']['ASPath'].append(self.asn)
     self.forward(srcif, packet)
     self.coalesce()
+    print("ROUTES: ", self.routes, "\n")
     return True
-
+  
+  # Finds the route given in the aggregate table, deaggregate, and update forwarding table
+  def findAggRoute(self, route, srcif):
+    aggs = list(iter(self.aggregates))
+    for newip in aggs:
+      info = self.aggregates[newip]
+      if info['ip1']['network'] == route['network']:
+        self.routes[info['ip2']['network'], srcif] = info['ip2']
+        del self.routes[newip, srcif]
+        del self.aggregates[newip]
+      elif info['ip2']['network'] == route['network']:
+        self.routes[info['ip1']['network'], srcif] = info['ip1']
+        del self.routes[newip, srcif]
+        del self.aggregates[newip]
+  
+  # Runs through all revoke messages and removes the routes from the forwarding table
   def revoke(self, packet):
     """ handle revoke packets """
     self.revokes.append(packet)
     for route in packet['msg']:
-      tmp = self.routes[(route['network'], packet['src'])]
-      if tmp['netmask'] == route['netmask']:
-        self.routes.pop((route['network'],packet['src']))
+      if (route['network'], packet['src']) in self.routes:
+        tmp = self.routes[(route['network'], packet['src'])]
+        if tmp['netmask'] == route['netmask']:
+          self.routes.pop((route['network'],packet['src']))
+      else:
+        self.findAggRoute(route, packet['src'])
     self.forward(packet['src'], packet)
     return True
 
